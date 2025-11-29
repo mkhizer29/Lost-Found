@@ -1,5 +1,6 @@
 # app/__init__.py
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from db import get_connection
 import config
 import oracledb
@@ -7,6 +8,7 @@ import oracledb
 
 def create_app():
     app = Flask(__name__)
+    CORS(app)
     app.config["SECRET_KEY"] = config.JWT_SECRET
 
     @app.get("/")
