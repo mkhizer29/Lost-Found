@@ -151,3 +151,27 @@ body {
   .category-item { grid-template-columns: 1fr 1fr 48px; }
 }
 
+/* ====== MODAL STYLES (NEW) ====== */
+.modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex; justify-content: center; align-items: center;
+  z-index: 1000;
+}
+.modal-content {
+  background: white; padding: 24px; border-radius: 12px;
+  width: 400px; max-width: 90%;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+}
+.modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px; }
+
+/* Buttons */
+.claim-btn {
+  background: #2563eb; color: white; border: none; padding: 6px 12px;
+  border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600;
+}
+.claim-btn:hover { background: #1d4ed8; }
+
+.cancel-btn { background: #e5e7eb; color: #374151; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+.submit-btn { background: #c8102e; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+.submit-btn:disabled { opacity: 0.6; cursor: default; }
