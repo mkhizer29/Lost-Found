@@ -1,0 +1,42 @@
+# fix_otp_schema.py
+from db import get_connection
+
+def add_otp_support():
+    print("Connecting to database...")
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    try:
+        # 1. Add OTP Column
+        print("Adding 'otp_code' column...")
+        try:
+            cur.execute("ALTER TABLE APP_USER ADD otp_code VARCHAR2(6)")
+            print("✅ 'otp_code' column added.")
+        except Exception as e:
+            print(f"ℹ️ Info: {e}")
+
+        # 2. Update Status Constraint (Drop old, add new)
+        print("Updating status constraint to allow 'UNVERIFIED'...")
+        try:
+            cur.execute("ALTER TABLE APP_USER DROP CONSTRAINT ck_app_user_status")
+        except Exception:
+            pass # Constraint might not exist or have a different name
+
+        cur.execute("""
+            ALTER TABLE APP_USER
+            ADD CONSTRAINT ck_app_user_status
+            CHECK (status IN ('ACTIVE', 'BLOCKED', 'UNVERIFIED'))
+        """)
+        print("✅ Status constraint updated.")
+        
+    except Exception as e:
+        print(f"⚠️ Error: {e}")
+        
+    finally:
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Done.")
+
+if __name__ == "__main__":
+    add_otp_support()

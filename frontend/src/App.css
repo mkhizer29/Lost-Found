@@ -175,3 +175,215 @@ body {
 .cancel-btn { background: #e5e7eb; color: #374151; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
 .submit-btn { background: #c8102e; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
 .submit-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* ==============================
+   CHAT MODAL STYLING (The Fix)
+   ============================== */
+
+/* 1. The Modal Container */
+.chat-modal {
+  width: 450px;       /* Wider for better reading */
+  height: 600px;      /* Taller */
+  display: flex;
+  flex-direction: column;
+  padding: 0;         /* Remove default padding to let header/footer touch edges */
+  overflow: hidden;   /* Keep everything inside */
+}
+
+/* 2. The Header */
+.chat-modal h3 {
+  background: var(--iba-red);
+  color: white;
+  margin: 0;
+  padding: 15px 20px;
+  font-size: 1.1rem;
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.chat-modal .close-btn {
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+}
+
+/* 3. The Chat Area (Scrollable Middle) */
+.chat-window {
+  flex: 1;                /* Takes all available space */
+  background: #f0f2f5;    /* Light gray background like WhatsApp */
+  padding: 20px;
+  overflow-y: auto;       /* Scroll vertical only */
+  display: flex;
+  flex-direction: column; /* Stack messages */
+  gap: 12px;              /* Space between bubbles */
+}
+
+/* 4. Message Rows */
+.chat-message {
+  display: flex;
+  width: 100%;
+}
+
+/* 5. DIFFERENTIATION: MY MSG vs OTHER MSG */
+.my-message {
+  justify-content: flex-end; /* Push to RIGHT */
+}
+.other-message {
+  justify-content: flex-start; /* Push to LEFT */
+}
+
+/* 6. The Bubbles */
+.message-content {
+  max-width: 75%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  position: relative;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+
+/* My Bubble (Blue) */
+.my-message .message-content {
+  background: #2563eb; 
+  color: white;
+  border-bottom-right-radius: 2px; /* Pointy corner */
+}
+
+/* Other Bubble (White/Gray) */
+.other-message .message-content {
+  background: white;
+  color: #1f2937;
+  border-bottom-left-radius: 2px; /* Pointy corner */
+}
+
+/* 7. Timestamp Styling */
+.message-time {
+  display: block;
+  font-size: 0.65rem;
+  margin-top: 4px;
+  text-align: right;
+  opacity: 0.8; /* Slightly see-through */
+}
+
+/* 8. Input Area (Bottom) */
+.chat-input-form {
+  padding: 15px;
+  background: white;
+  border-top: 1px solid #ddd;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.chat-input-field {
+  flex: 1; /* Take remaining space */
+  padding: 12px;
+  border-radius: 20px;
+  border: 1px solid #ddd;
+  background: #f9fafb;
+  outline: none;
+}
+
+.chat-input-field:focus {
+  border-color: #2563eb;
+  background: white;
+}
+
+.send-btn {
+  background: #2563eb; /* Blue send button */
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.send-btn:hover {
+  background: #1d4ed8;
+}
+
+/* ==============================
+   NOTIFICATIONS
+   ============================== */
+.notif-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.bell-icon {
+  font-size: 1.4rem;
+  color: #555;
+  transition: color 0.2s;
+}
+.bell-icon:hover { color: var(--iba-red); }
+
+.notif-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  background: var(--iba-red);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: bold;
+  padding: 2px 6px;
+  border-radius: 50%;
+  border: 2px solid white;
+}
+
+.notif-dropdown {
+  position: absolute;
+  top: 40px;        /* Push it down slightly */
+  right: -60px;     /* Align it better with the bell */
+  width: 300px;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+  z-index: 1000;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+
+.notif-header {
+  padding: 12px 16px;
+  background: #f9fafb;
+  border-bottom: 1px solid #eee;
+  font-weight: bold;
+  font-size: 0.9rem;
+  color: #374151;
+}
+
+.notif-list {
+  max-height: 350px;
+  overflow-y: auto;
+}
+
+.notif-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 0.85rem;
+  color: #4b5563;
+  transition: background 0.2s;
+}
+.notif-item:hover { background: #f9fafb; }
+.notif-item.unread { background: #eff6ff; border-left: 3px solid #2563eb; }
+
+.notif-date {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.empty-notif { padding: 20px; text-align: center; color: #aaa; font-style: italic; }

@@ -1,0 +1,8 @@
+-- 1. Add the High Value column (0=False, 1=True)
+ALTER TABLE CATEGORY ADD IS_HIGH_VALUE NUMBER(1) DEFAULT 0;
+
+-- 2. Mark sensitive categories as High Value
+-- (Adjust the names 'Electronics', etc. if your actual category names are different)
+UPDATE CATEGORY SET IS_HIGH_VALUE = 1 WHERE NAME IN ('Electronics', 'Documents', 'Wallet', 'Jewelry', 'Laptops');
+
+COMMIT;

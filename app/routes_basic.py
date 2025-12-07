@@ -2,7 +2,7 @@
 
 import os
 from werkzeug.utils import secure_filename
-from flask import Blueprint, jsonify, request, current_app
+from flask import Blueprint, jsonify, request, current_app, session
 from db import get_connection
 import oracledb
 
@@ -47,9 +47,9 @@ def get_categories():
     try:
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT category_id, name, description FROM CATEGORY WHERE is_active = 'Y' ORDER BY name")
+        cur.execute("SELECT category_id, name, description, is_high_value FROM CATEGORY WHERE is_active = 'Y' ORDER BY name")
         rows = cur.fetchall()
-        result = [{"category_id": row[0], "name": row[1], "description": row[2]} for row in rows]
+        result = [{"category_id": row[0], "name": row[1], "description": row[2], "is_high_value": row[3]} for row in rows]
         return jsonify(result)
     except Exception as e:
         print("Error in GET /api/categories:", e)
@@ -82,8 +82,8 @@ def get_locations():
 @bp.get("/api/reports")
 def list_reports():
     """
-    Return a list of reports + joined item info.
-    UPDATED: Now selects i.item_id so we can use it for claims.
+    Fetch ALL reports.
+    UPDATED: Returns 'reporter_id' so we can hide the Claim button for the owner.
     """
     conn = None
     cur = None
@@ -91,7 +91,8 @@ def list_reports():
         conn = get_connection()
         cur = conn.cursor()
 
-        # UPDATED SQL: Added i.item_id at index 1
+        # 1. Fetch Reports
+        # 1. Fetch Reports WITH Claim Info
         cur.execute("""
             SELECT 
               r.report_id,
@@ -102,11 +103,19 @@ def list_reports():
               l.name           AS location_name,
               i.status         AS item_status,
               r.created_at,
-              i.image_url      AS item_image_url
+              i.image_url      AS item_image_url,
+              r.reporter_id,
+              -- NEW COLUMNS FOR BUTTONS --
+              cl.claim_id,
+              cl.status        AS claim_status,
+              c.IS_HIGH_VALUE
             FROM REPORT r
               JOIN ITEM     i ON r.item_id     = i.item_id
               JOIN CATEGORY c ON i.category_id = c.category_id
               JOIN LOCATION l ON r.location_id = l.location_id
+              -- LEFT JOIN to check if there is an active claim --
+              LEFT JOIN CLAIM cl ON i.item_id = cl.item_id 
+                   AND cl.status IN ('PENDING', 'APPROVED', 'REJECTED', 'ESCALATED')
             ORDER BY r.created_at DESC
         """)
 
@@ -114,7 +123,7 @@ def list_reports():
         result = [
             {
                 "report_id":      row[0],
-                "item_id":        row[1], # Critical for Claims
+                "item_id":        row[1],
                 "report_type":    row[2],
                 "item_title":     row[3],
                 "category_name":  row[4],
@@ -122,16 +131,22 @@ def list_reports():
                 "item_status":    row[6],
                 "created_at":     row[7].isoformat() if row[7] is not None else None,
                 "item_image_url": row[8],
+                "reporter_id":    row[9],
+                # MAPPING THE NEW COLUMNS
+                "claim_id":       row[10], 
+                "claim_status":   row[11],
+                "is_high_value":  row[12]
             }
             for row in rows
         ]
         return jsonify(result)
+
     except Exception as e:
         print("Error in GET /api/reports:", e)
-        return jsonify({"error": "Failed to load reports"}), 500
+        return jsonify({"error": str(e)}), 500
     finally:
-        if cur is not None: cur.close()
-        if conn is not None: conn.close()
+        if cur: cur.close()
+        if conn: conn.close()
 
 
 # ------------------- Create report (POST) ------------------- #
@@ -228,26 +243,144 @@ def create_report():
         if cur: cur.close()
         if conn: conn.close()
 
+# ------------------- My Reports ------------------- #
+
+@bp.get("/api/my-reports")
+def get_my_reports():
+    """
+    Get items REPORTED by the current user.
+    Fixed: Includes 'item_id' in SQL so row[7] exists.
+    """
+    user_id = session.get("user_id")
+    if not user_id: return jsonify({"error": "Unauthorized"}), 401
+
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT 
+                r.report_id,
+                i.title,
+                i.status AS item_status,
+                c.claim_id,
+                u.full_name AS claimant_name,
+                c.status AS claim_status,
+                r.report_type, -- Index 6
+                i.item_id,      
+                cat.is_high_value,
+                c.claim_message,    
+                ce.evidence_value   
+            FROM REPORT r
+            JOIN ITEM i ON r.item_id = i.item_id
+            JOIN CATEGORY cat ON i.category_id = cat.category_id
+            LEFT JOIN CLAIM c ON i.item_id = c.item_id
+            LEFT JOIN APP_USER u ON c.claimant_id = u.user_id
+            LEFT JOIN CLAIM_EVIDENCE ce ON c.claim_id = ce.claim_id AND ce.evidence_type = 'PHOTO'
+            WHERE r.reporter_id = :1
+            ORDER BY r.created_at DESC
+        """, [user_id])
+
+        rows = cur.fetchall()
+        results = [
+            {
+                "report_id": row[0],
+                "item_title": row[1],
+                "item_status": row[2],
+                "claim_id": row[3],
+                "claimant_name": row[4],
+                "claim_status": row[5],
+                "report_type": row[6],
+                "item_id": row[7],
+                "is_high_value": row[8],
+                "claim_message": row[9],
+                "proof_url": row[10]
+            }
+            for row in rows
+        ]
+        return jsonify(results)
+
+    except Exception as e:
+        print("Error in GET /api/my-reports:", e)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
 
 # ------------------- Claims Logic (NEW) ------------------- #
 
-# app/routes_basic.py (Replace the create_claim function at the bottom)
+# app/routes_basic.py 
+
+@bp.get("/api/my-claims")
+def get_my_claims():
+    """
+    Get interactions initiated by the current user.
+    UPDATED: Returns 'report_type' so we can separate 'My Claims' from 'My Discoveries'.
+    """
+    user_id = session.get("user_id")
+    if not user_id: return jsonify({"error": "Unauthorized"}), 401
+    
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT 
+                c.claim_id,
+                i.title,
+                c.status,
+                c.claim_message,
+                c.created_at,
+                i.item_id,
+                r.report_type  -- <--- NEW COLUMN
+            FROM CLAIM c
+            JOIN ITEM i ON c.item_id = i.item_id
+            JOIN REPORT r ON i.item_id = r.item_id
+            WHERE c.claimant_id = :1
+            ORDER BY c.created_at DESC
+        """, [user_id])
+
+        rows = cur.fetchall()
+        results = [
+            {
+                "claim_id": row[0],
+                "item_title": row[1],
+                "status": row[2],
+                "message": row[3],
+                "created_at": row[4].isoformat() if row[4] else None,
+                "item_id": row[5],
+                "report_type": row[6] # 'LOST' or 'FOUND'
+            }
+            for row in rows
+        ]
+        return jsonify(results)
+
+    except Exception as e:
+        print("Error in GET /api/my-claims:", e)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
 
 @bp.post("/api/claims")
 def create_claim():
     """
-    Submit a claim for an item with optional PHOTO evidence.
-    Matches the user's specific schema (CLAIM + CLAIM_EVIDENCE tables).
+    Submit a claim for an item.
+    UPDATED: Checks if user already claimed this item.
     """
-    # 1. Get Text Data
     item_id = request.form.get("item_id")
     claimant_id = request.form.get("claimant_id")
     evidence_text = request.form.get("evidence_text")
 
     if not item_id or not claimant_id or not evidence_text:
-        return jsonify({"error": "Missing item_id, claimant_id, or evidence text"}), 400
+        return jsonify({"error": "Missing item_id, claimant_id, or evidence"}), 400
 
-    # 2. Handle Proof Photo Upload
+    # Handle Photo
     proof_url = None
     if 'proof_image' in request.files:
         file = request.files['proof_image']
@@ -264,16 +397,22 @@ def create_claim():
         conn = get_connection()
         cur = conn.cursor()
 
-        # 3. Verify Item Status
+        # 1. CHECK FOR DUPLICATE CLAIM (New Logic)
+        cur.execute("""
+            SELECT claim_id FROM CLAIM 
+            WHERE item_id = :1 AND claimant_id = :2
+        """, [item_id, claimant_id])
+        if cur.fetchone():
+            return jsonify({"error": "You have already claimed this item."}), 400
+
+        # 2. Verify Item Status (Open or Matched)
         cur.execute("SELECT status FROM ITEM WHERE item_id = :1", [item_id])
         row = cur.fetchone()
-        if not row:
-            return jsonify({"error": "Item not found"}), 404
-        
+        if not row: return jsonify({"error": "Item not found"}), 404
         if row[0] not in ('OPEN', 'MATCHED'):
-             return jsonify({"error": f"Item is not available (Status: {row[0]})"}), 400
+             return jsonify({"error": f"Item not available (Status: {row[0]})"}), 400
 
-        # 4. Insert CLAIM (Using YOUR column names: claim_message, created_at)
+        # 3. Insert CLAIM
         claim_id_var = cur.var(oracledb.NUMBER)
         cur.execute("""
             INSERT INTO CLAIM (
@@ -284,12 +423,12 @@ def create_claim():
         """, {
             "item_id": int(item_id),
             "claimant_id": int(claimant_id),
-            "claim_message": evidence_text, # Mapping evidence_text -> claim_message
+            "claim_message": evidence_text,
             "claim_id": claim_id_var
         })
         new_claim_id = int(claim_id_var.getvalue()[0])
 
-        # 5. Insert Evidence (If photo exists, put it in CLAIM_EVIDENCE table)
+        # 4. Insert Evidence
         if proof_url:
             cur.execute("""
                 INSERT INTO CLAIM_EVIDENCE (
@@ -297,10 +436,7 @@ def create_claim():
                 ) VALUES (
                     :claim_id, 'PHOTO', :evidence_value, SYSTIMESTAMP
                 )
-            """, {
-                "claim_id": new_claim_id,
-                "evidence_value": proof_url
-            })
+            """, {"claim_id": new_claim_id, "evidence_value": proof_url})
 
         conn.commit()
         return jsonify({"message": "Claim submitted successfully", "claim_id": new_claim_id}), 201
@@ -313,16 +449,14 @@ def create_claim():
         if cur: cur.close()
         if conn: conn.close()
 
-# app/routes_basic.py (Add to bottom)
+# ------------------- ADMIN DASHBOARD ------------------- #
 
-@bp.get("/api/my-claims")
-def get_my_claims():
+@bp.get("/api/admin/claims_queue")
+def get_pending_claims():
     """
-    Get all claims made by the current user (hardcoded ID 22 for now).
+    Fetch all claims with status 'PENDING' for the Admin Dashboard.
+    Joins with ITEM to show what is being claimed.
     """
-    # Hardcoded to match the frontend TEST_CLAIMANT_ID
-    current_user_id = 22 
-    
     conn = None
     cur = None
     try:
@@ -332,32 +466,424 @@ def get_my_claims():
         cur.execute("""
             SELECT 
                 c.claim_id,
-                i.title,
-                c.status,
+                c.claimant_id,
+                i.title AS item_title,
                 c.claim_message,
-                c.created_at
+                c.created_at,
+                ce.evidence_value AS proof_url,
+                c.status -- <--- ADD THIS COLUMN HERE
             FROM CLAIM c
             JOIN ITEM i ON c.item_id = i.item_id
-            WHERE c.claimant_id = :1
-            ORDER BY c.created_at DESC
-        """, [current_user_id])
+            LEFT JOIN CLAIM_EVIDENCE ce ON c.claim_id = ce.claim_id AND ce.evidence_type = 'PHOTO'
+            WHERE c.status IN ('PENDING', 'ESCALATED')
+            ORDER BY 
+                CASE WHEN c.status = 'ESCALATED' THEN 1 ELSE 2 END, -- Show Disputes First
+                c.created_at ASC
+        """)
 
         rows = cur.fetchall()
         results = [
             {
                 "claim_id": row[0],
-                "item_title": row[1],
-                "status": row[2],
+                "claimant_id": row[1],
+                "item_title": row[2],
                 "message": row[3],
-                "created_at": row[4].isoformat() if row[4] else None
+                "created_at": row[4].isoformat() if row[4] else None,
+                "proof_url": row[5],
+                "status": row[6]  # <--- ADD THIS MAPPING
             }
             for row in rows
         ]
         return jsonify(results)
 
     except Exception as e:
-        print("Error in GET /api/my-claims:", e)
+        print("Error in GET /api/admin/claims:", e)
         return jsonify({"error": str(e)}), 500
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+
+# ------------------- APPROVE / REJECT (ADMIN & REPORTER) ------------------- #
+
+@bp.post("/api/claims/approve") 
+def approve_claim():
+    """
+    Approve a claim.
+    Allowed for: ADMIN or the REPORTER (Finder) of the item.
+    """
+    user_id = session.get("user_id")
+    if not user_id: return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    claim_id = data.get("claim_id")
+    
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        # 1. Fetch associated item and users for this claim (item_id, reporter_id, claimant_id)
+        cur.execute("""
+            SELECT i.item_id, r.reporter_id, c.claimant_id
+            FROM CLAIM c
+            JOIN ITEM i ON c.item_id = i.item_id
+            JOIN REPORT r ON i.item_id = r.item_id
+            WHERE c.claim_id = :1
+        """, [claim_id])
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"error": "Claim not found"}), 404
+        item_id, reporter_id, claimant_id = row
+
+        # 2. Check if the item's category is high value
+        cur.execute("""
+            SELECT cat.IS_HIGH_VALUE
+            FROM ITEM i
+            JOIN CATEGORY cat ON i.category_id = cat.category_id
+            WHERE i.item_id = :1
+        """, [item_id])
+        cat_row = cur.fetchone()
+        is_high_value = cat_row[0] if cat_row else 0
+
+        # 3. Permission Logic
+        user_role = session.get("role")
+        
+        # If Admin -> Allow everything
+        if user_role == 'ADMIN':
+            pass
+        # If Reporter -> Allow ONLY if NOT high value
+        elif user_id == reporter_id:
+            if is_high_value == 1:
+                return jsonify({"error": "Security Restriction: High-value items (Electronics, etc.) must be approved by an Admin."}), 403
+        else:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        # 3. Update Database (Approve Claim, Close Item, Reject Others)
+        cur.execute("UPDATE CLAIM SET status = 'APPROVED' WHERE claim_id = :1", [claim_id])
+        cur.execute("UPDATE ITEM SET status = 'CLAIMED' WHERE item_id = :1", [item_id])
+        cur.execute("UPDATE CLAIM SET status = 'REJECTED' WHERE item_id = :1 AND claim_id != :2 AND status = 'PENDING'", [item_id, claim_id])
+
+        # 4. Create Notification
+        msg = "Good news! Your claim has been APPROVED. Please coordinate pickup."
+        cur.execute("INSERT INTO NOTIFICATION (user_id, type, message, is_read, created_at) VALUES (:1, 'CLAIM_STATUS', :2, 'N', SYSTIMESTAMP)", [claimant_id, msg])
+
+        conn.commit()
+        return jsonify({"message": "Approved"})
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+
+@bp.post("/api/claims/reject")
+def reject_claim():
+    """
+    Reject a claim.
+    Allowed for: ADMIN or the REPORTER.
+    """
+    user_id = session.get("user_id")
+    if not user_id: return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    claim_id = data.get("claim_id")
+
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        # 1. Get Info
+        cur.execute("""
+            SELECT r.reporter_id, c.claimant_id 
+            FROM CLAIM c 
+            JOIN ITEM i ON c.item_id = i.item_id 
+            JOIN REPORT r ON i.item_id = r.item_id 
+            WHERE c.claim_id = :1
+        """, [claim_id])
+        row = cur.fetchone()
+        if not row: return jsonify({"error": "Not found"}), 404
+        reporter_id, claimant_id = row
+
+        # 2. Permission Check
+        if session.get("role") != 'ADMIN' and user_id != reporter_id:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        # 3. Update Status
+        cur.execute("UPDATE CLAIM SET status = 'REJECTED' WHERE claim_id = :1", [claim_id])
+        
+        # 4. Create Notification
+        msg = "Your claim was not accepted."
+        cur.execute("INSERT INTO NOTIFICATION (user_id, type, message, is_read, created_at) VALUES (:1, 'CLAIM_STATUS', :2, 'N', SYSTIMESTAMP)", [claimant_id, msg])
+
+        conn.commit()
+        return jsonify({"message": "Rejected"})
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+#--------------Returning Item to Claimant (REPORTER) ----------------#
+@bp.post("/api/items/returned")
+def mark_returned():
+    """
+    Final Resolution: The Reporter confirms the item was handed over.
+    Status becomes 'RETURNED'.
+    """
+    user_id = session.get("user_id")
+    if not user_id: return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    item_id = data.get("item_id")
+
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        # 1. Verify User is the Reporter
+        # Also check if item exists
+        cur.execute("""
+            SELECT r.reporter_id, c.claimant_id 
+            FROM REPORT r
+            JOIN ITEM i ON r.item_id = i.item_id
+            LEFT JOIN CLAIM c ON i.item_id = c.item_id AND c.status = 'APPROVED'
+            WHERE r.item_id = :1
+        """, [item_id])
+        row = cur.fetchone()
+        
+        if not row: return jsonify({"error": "Item not found in database"}), 404
+        reporter_id, claimant_id = row
+
+        if user_id != reporter_id and session.get("role") != 'ADMIN':
+            return jsonify({"error": "Only the Finder can mark this as returned."}), 403
+
+        # 2. Update Item Status
+        cur.execute("UPDATE ITEM SET status = 'RETURNED' WHERE item_id = :1", [item_id])
+
+        # 3. Notify the Claimant
+        if claimant_id:
+            msg = "The item has been marked as RETURNED. Thank you!"
+            cur.execute("""
+                INSERT INTO NOTIFICATION (user_id, type, message, is_read, created_at)
+                VALUES (:1, 'SYSTEM', :2, 'N', SYSTIMESTAMP)
+            """, [claimant_id, msg])
+
+        conn.commit()
+        return jsonify({"message": "Item marked as returned."})
+
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+# ------------------- Escalate to Admin ------------------- #
+@bp.post("/api/claims/escalate")
+def escalate_claim():
+    """
+    Allow a Claimant to appeal a rejection.
+    Status becomes 'ESCALATED'.
+    """
+    user_id = session.get("user_id")
+    if not user_id: return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    claim_id = data.get("claim_id")
+
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        # 1. Verify User is the Claimant and Status is REJECTED
+        cur.execute("SELECT claimant_id, status FROM CLAIM WHERE claim_id = :1", [claim_id])
+        row = cur.fetchone()
+        if not row: return jsonify({"error": "Claim not found"}), 404
+        
+        claimant_id, status = row
+        if user_id != claimant_id:
+            return jsonify({"error": "Only the claimant can escalate this."}), 403
+        
+        if status != 'REJECTED':
+            return jsonify({"error": "Only rejected claims can be escalated."}), 400
+
+        # 2. Update Status
+        cur.execute("UPDATE CLAIM SET status = 'ESCALATED' WHERE claim_id = :1", [claim_id])
+        conn.commit()
+        
+        return jsonify({"message": "Claim escalated to Admin."})
+
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+#-- ------------------- Similarity Check------------------- 
+
+# app/routes_basic.py
+
+@bp.get("/api/reports/<int:report_id>/matches")
+def get_matches(report_id):
+    """
+    Smart Matching Algorithm:
+    Finds FOUND items similar to a specific LOST report.
+    Ranking Logic:
+    - Must match CATEGORY (Strict)
+    - +10 points for Same Location
+    - +5 points for Same Color
+    - +5 points for matching words in Title
+    """
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        # 1. Fetch details of the LOST item first
+        cur.execute("""
+            SELECT i.category_id, i.primary_color, r.location_id, i.title, r.event_datetime
+            FROM REPORT r
+            JOIN ITEM i ON r.item_id = i.item_id
+            WHERE r.report_id = :1 AND r.report_type = 'LOST'
+        """, [report_id])
+        
+        lost_item = cur.fetchone()
+        if not lost_item:
+            return jsonify({"error": "Lost report not found"}), 404
+            
+        cat_id, color, loc_id, title, lost_date = lost_item
+        
+        # Safe handling for None values
+        color = color if color else ""
+        title_keyword = title.split()[0] if title else "" # Simple keyword: First word of title
+
+        # 2. Search for Matches (The Smart Query)
+        # We look for FOUND items in the same category that are OPEN.
+        query = """
+            SELECT 
+                r.report_id,
+                i.item_id,
+                i.title,
+                i.primary_color,
+                l.name as location_name,
+                i.image_url,
+                r.event_datetime,
+                -- CALCULATE MATCH SCORE
+                (
+                    CASE WHEN r.location_id = :loc_id THEN 10 ELSE 0 END +
+                    CASE WHEN LOWER(i.primary_color) = LOWER(:color) THEN 5 ELSE 0 END +
+                    CASE WHEN LOWER(i.title) LIKE LOWER(:title_pattern) THEN 5 ELSE 0 END
+                ) as match_score
+            FROM REPORT r
+            JOIN ITEM i ON r.item_id = i.item_id
+            JOIN LOCATION l ON r.location_id = l.location_id
+            WHERE r.report_type = 'FOUND'
+              AND i.status = 'OPEN'
+              AND i.category_id = :cat_id
+              -- Filter: Must have at least one matching attribute (Score > 0)
+              AND (
+                  r.location_id = :loc_id OR 
+                  LOWER(i.primary_color) = LOWER(:color) OR
+                  LOWER(i.title) LIKE LOWER(:title_pattern)
+              )
+            ORDER BY match_score DESC, r.created_at DESC
+        """
+
+        cur.execute(query, {
+            "loc_id": loc_id,
+            "color": color,
+            "title_pattern": f"%{title_keyword}%",
+            "cat_id": cat_id
+        })
+        
+        rows = cur.fetchall()
+        matches = [
+            {
+                "report_id": r[0],
+                "item_id": r[1],
+                "title": r[2],
+                "color": r[3],
+                "location": r[4],
+                "image_url": r[5],
+                "date": r[6].isoformat() if r[6] else "N/A",
+                "score": r[7]
+            }
+            for r in rows
+        ]
+
+        return jsonify(matches)
+
+    except Exception as e:
+        print("Matching Error:", e)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+# ------------------- NOTIFICATIONS ------------------- #
+
+@bp.get("/api/notifications")
+def get_notifications():
+    """Fetch recent notifications for the logged-in user."""
+    user_id = session.get("user_id")
+    if not user_id: return jsonify([]), 200
+
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT notification_id, type, message, created_at, is_read
+            FROM NOTIFICATION
+            WHERE user_id = :1
+            ORDER BY created_at DESC
+            FETCH FIRST 20 ROWS ONLY
+        """, [user_id])
+        
+        rows = cur.fetchall()
+        result = [{
+            "id": r[0], 
+            "type": r[1], 
+            "message": r[2], 
+            "date": r[3].isoformat() if r[3] else None, 
+            "is_read": r[4]
+        } for r in rows]
+        
+        return jsonify(result)
+    except Exception as e:
+        print("Notif Error:", e)
+        return jsonify([]), 500
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+@bp.post("/api/notifications/mark-read")
+def mark_notifications_read():
+    """Mark all notifications as read when the user opens the dropdown."""
+    user_id = session.get("user_id")
+    if not user_id: return jsonify({"error": "Unauthorized"}), 401
+    
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE NOTIFICATION SET is_read = 'Y' WHERE user_id = :1", [user_id])
+        conn.commit()
+        return jsonify({"message": "Marked read"})
     finally:
         if cur: cur.close()
         if conn: conn.close()

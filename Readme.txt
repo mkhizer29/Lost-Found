@@ -1,65 +1,172 @@
-# IBA Lost & Found – Database
+# IBA Lost & Found — Project README
 
-This repository contains the Oracle database design and scripts for an IBA campus Lost & Found system.
+This repository contains the Lost & Found application for IBA campus: an Oracle-backed Flask API and a React frontend. The SQL files under `sql/` define the schema and demo data used by the application.
 
-## Schema Overview
+This README provides a concise quick-start for developers who want to run the project locally, set up the database schema, and run the frontend (Vite recommended). It also lists useful troubleshooting tips and important notes about secrets and environment configuration.
 
-Main tables:
+---
 
-- `APP_USER` – users of the system (students, staff, admin)  
-- `CATEGORY` – fixed list of item categories (Electronics, Bags and Wallets, etc.)  
-- `LOCATION` – fixed list of IBA campus locations (Gate 1, Library, Pepsi Cafeteria, etc.)  
-- `ITEM` – an item that has been reported lost/found  
-- `REPORT` – a lost/found report linked to an item and a location  
-- `CLAIM` – a claim made by a user on a found item  
-- `CLAIM_EVIDENCE` – evidence (TEXT/PHOTO/FILE) submitted for a claim  
-- `MESSAGE` – conversation messages between claimant and reporter  
-- `NOTIFICATION` – system notifications (new claim, claim status, new message, etc.)
+## Repository layout (important files)
 
-## SQL Scripts
+- `run.py` — Flask app entrypoint (calls `app.create_app()`).
+- `app/` — Flask application package; main API routes in `app/routes_basic.py`.
+- `db.py` — Oracle connection helper (reads credentials from `config.py`).
+- `config.py` — local config file (DB credentials and other secrets). **Do not commit this file publicly.**
+- `sql/` — SQL scripts to create schema and demo data. See `Tables.sql` for the full schema (includes `APP_USER`, `ITEM`, `REPORT`, etc.).
+- `frontend/` — React frontend (you may recreate this with Vite for a fresh dev setup).
 
-All scripts are under the `sql/` folder.
+---
 
-1. `01_drop_tables.sql`  
-   Drops all tables in the correct dependency order (used when resetting the schema).
+## Quick start — Backend (Flask)
 
-2. `02_create_tables.sql`  
-   Creates all tables, primary keys, foreign keys, and CHECK constraints.
+1. Create and activate a Python virtual environment (PowerShell):
 
-3. `03_insert_lookup_data.sql`  
-   Clears transactional data, then inserts lookup/master data:
-   - IBA item categories
-   - IBA campus locations
+```powershell
+cd /d D:\Lost-Found
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+```
 
-4. `04_insert_demo_scenario.sql`  
-   Inserts a demo scenario:
-   - Users: Ali (BS CS student), Sana (BBA student), Admin
-   - Sana reports a found wallet at Pepsi Cafeteria
-   - Ali submits a claim with evidence
-   - A message and related notifications are created
+2. Install backend dependencies:
 
-5. `05_example_queries.sql`  
-   Example SELECT queries for:
-   - Browse items
-   - My Lost / My Found
-   - My Claims
-   - Admin pending claims
-   - Summary of items with claim counts
-   - `V_ITEM_OVERVIEW` view
+```powershell
+pip install flask flask-cors python-oracledb
+```
 
-6. `06_business_rules.sql`  
-   Implements business rules as triggers:
-   - When claim status changes, update item status and send notifications.
-   - When a message is inserted, automatically create a NEW_MESSAGE notification for the receiver.
+3. Configure DB credentials:
+- Edit `config.py` to set `DB_USER`, `DB_PASSWORD`, and `DB_DSN`. Treat these as secrets and do not share them.
 
-## How to set up the database
+4. Run the Flask app (development mode):
 
-In Oracle SQL Developer (or SQL*Plus), run the scripts in this order:
+```powershell
+python run.py
+```
 
-1. `02_create_tables.sql`
-2. `03_insert_lookup_data.sql`
-3. `04_insert_demo_scenario.sql` (optional but recommended for testing)
-4. `06_business_rules.sql`
-5. `05_example_queries.sql` (for testing and documentation)
+5. Verify the server is running:
 
-After that, you can run the example queries or connect your application to this schema.
+```powershell
+# from PowerShell (or use browser)
+Invoke-RestMethod http://127.0.0.1:5000/ping
+Invoke-RestMethod http://127.0.0.1:5000/api/db-test
+```
+
+If `db-test` returns an error, confirm Oracle is running, `DB_DSN` is reachable, and `python-oracledb` is correctly installed. For `python-oracledb` you may need Oracle Instant Client depending on your environment.
+
+---
+
+## Database setup (Oracle)
+
+Run these scripts in the database client (SQL*Plus, SQL Developer) in the following order. Replace `--` comments with the commands supported by your client:
+
+1. Create tables and constraints:
+
+```sql
+-- Run: sql/02_create_tables.sql
+@sql/02_create_tables.sql
+```
+
+2. Insert lookup/master data:
+
+```sql
+-- Run: sql/03_insert_lookup_data.sql
+@sql/03_insert_lookup_data.sql
+```
+
+3. (Optional) Insert demo scenario for testing:
+
+```sql
+-- Run: sql/04_insert_demo_scenario.sql
+@sql/04_insert_demo_scenario.sql
+```
+
+4. Apply business rules and triggers:
+
+```sql
+-- Run: sql/06_business_rules.sql
+@sql/06_business_rules.sql
+```
+
+5. Example queries (for exploring the data):
+
+```sql
+-- Run: sql/05_example_queries.sql
+@sql/05_example_queries.sql
+```
+
+---
+
+## Quick start — Frontend (recommended: Vite)
+
+The original project used Create React App; a fresh Vite scaffold is recommended to avoid legacy `react-scripts` issues.
+
+1. Create a Vite project and install dependencies (PowerShell):
+
+```powershell
+cd /d D:\Lost-Found
+npm create vite@latest frontend -- --template react
+cd frontend
+npm install
+```
+
+2. Copy your modified frontend files into the new scaffold. Example (PowerShell):
+
+```powershell
+# Back up the new scaffold's src first
+robocopy frontend\src frontend\src_backup /E
+# Copy your edited files from the repo backup (adjust paths as needed)
+Copy-Item ..\frontend_backup\App.js frontend\src\App.jsx -Force
+Copy-Item ..\frontend_backup\App.css frontend\src\App.css -Force
+Copy-Item ..\frontend\src\index.css frontend\src\index.css -Force
+```
+
+3. Start the Vite dev server:
+
+```powershell
+cd /d D:\Lost-Found\frontend
+npm run dev
+```
+
+Open the URL shown in the terminal (commonly `http://localhost:5173`). If the app errors about environment variables, convert any `REACT_APP_*` variables to `VITE_*` and access via `import.meta.env.VITE_*`.
+
+---
+
+## Useful API endpoints (backend)
+
+- `GET /ping` — health check
+- `GET /api/db-test` — DB connectivity test
+- `GET /api/categories` — list active categories
+- `GET /api/locations` — list active locations
+- `GET /api/reports` — list reports for the frontend
+- `POST /api/reports` — create a report (multipart/form-data; expected fields documented in code)
+
+Use Postman, curl, or the React UI to exercise these endpoints after starting both servers.
+
+---
+
+## Development tips & troubleshooting
+
+- If the frontend fails with missing modules or `react-scripts` errors, remove `node_modules` and `package-lock.json` and reinstall from a clean scaffold rather than using `npm audit fix --force`.
+- If Flask errors when connecting to Oracle, check `config.py` values and ensure Oracle listener is reachable. For `python-oracledb` thick mode you may need Instant Client; thin mode requires no client libraries but has different configuration.
+- Keep secrets out of source control. Replace `config.py` with environment-based configuration for production.
+- For quick local testing of report creation without auth, the backend accepts `reporter_id` in the form data; provide a valid `APP_USER.user_id` while testing.
+
+---
+
+## Contributing and branches
+
+- Create a backup branch before major refactors:
+
+```powershell
+cd /d D:\Lost-Found
+git checkout -b backup/current-state
+git add -A
+git commit -m "checkpoint: current project state"
+```
+
+- Create a feature branch for the frontend migration:
+
+```powershell
+git checkout -b feat/frontend/vite
+```
+
