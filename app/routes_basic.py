@@ -314,10 +314,14 @@ def get_my_reports():
 def get_my_claims():
     """
     Get interactions initiated by the current user.
-    UPDATED: Returns 'report_type' so we can separate 'My Claims' from 'My Discoveries'.
+    Returns:
+      - claim status (PENDING / APPROVED / REJECTED / ESCALATED)
+      - report_type (LOST / FOUND)
+      - item_status (OPEN / CLAIMED / RETURNED)  <-- IMPORTANT
     """
     user_id = session.get("user_id")
-    if not user_id: return jsonify({"error": "Unauthorized"}), 401
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
     
     conn = None
     cur = None
@@ -327,13 +331,14 @@ def get_my_claims():
 
         cur.execute("""
             SELECT 
-                c.claim_id,
-                i.title,
-                c.status,
-                c.claim_message,
-                c.created_at,
-                i.item_id,
-                r.report_type  -- <--- NEW COLUMN
+                c.claim_id,        -- 0
+                i.title,           -- 1
+                c.status,          -- 2 (claim status)
+                c.claim_message,   -- 3
+                c.created_at,      -- 4
+                i.item_id,         -- 5
+                r.report_type,     -- 6 ('LOST' or 'FOUND')
+                i.status           -- 7 (item status: OPEN / CLAIMED / RETURNED)
             FROM CLAIM c
             JOIN ITEM i ON c.item_id = i.item_id
             JOIN REPORT r ON i.item_id = r.item_id
@@ -350,7 +355,8 @@ def get_my_claims():
                 "message": row[3],
                 "created_at": row[4].isoformat() if row[4] else None,
                 "item_id": row[5],
-                "report_type": row[6] # 'LOST' or 'FOUND'
+                "report_type": row[6],       # 'LOST' or 'FOUND'
+                "item_status": row[7]        # 'OPEN' / 'CLAIMED' / 'RETURNED'
             }
             for row in rows
         ]
