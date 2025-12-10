@@ -3,7 +3,7 @@ import os
 from db import get_connection
 
 def inspect_database():
-    print("--- 🔍 STARTING DATABASE INSPECTION ---")
+    print("--- 🔍 STARTING LOST & FOUND DATABASE INSPECTION ---")
     
     conn = None
     cursor = None
@@ -11,13 +11,37 @@ def inspect_database():
         conn = get_connection()
         cursor = conn.cursor()
         
-        # 1. Get all tables in the current schema
-        print("\n[1] FETCHING TABLES...")
-        cursor.execute("SELECT table_name FROM user_tables ORDER BY table_name")
+        # === DEFINING YOUR PROJECT SPECIFIC TABLES ===
+        # We only want to see these tables, ignoring others in the schema.
+        target_tables = [
+            'APP_USER', 
+            'CATEGORY', 
+            'CLAIM', 
+            'CLAIM_EVIDENCE', 
+            'ITEM', 
+            'LOCATION', 
+            'MESSAGE', 
+            'NOTIFICATION', 
+            'REPORT'
+        ]
+        
+        # Convert list to SQL format: 'TABLE1','TABLE2',...
+        sql_table_list = "'" + "','".join(target_tables) + "'"
+
+        # 1. Get ONLY specific tables
+        print(f"\n[1] FETCHING PROJECT TABLES ({len(target_tables)} tables)...")
+        
+        cursor.execute(f"""
+            SELECT table_name 
+            FROM user_tables 
+            WHERE table_name IN ({sql_table_list}) 
+            ORDER BY table_name
+        """)
+        
         tables = [row[0] for row in cursor.fetchall()]
         
         if not tables:
-            print("❌ No tables found in this user schema!")
+            print("❌ No matching Lost & Found tables found! Check your table names.")
             return
 
         for table in tables:
@@ -35,11 +59,13 @@ def inspect_database():
             
             columns = cursor.fetchall()
             print(f"{'Column Name':<25} | {'Type':<15} | {'Null?':<6} | {'Default'}")
-            print("-" * 70)
+            print("-" * 75)
             for col in columns:
                 col_name = col[0]
+                # Format type (e.g., VARCHAR2(255))
                 data_type = f"{col[1]}({col[2]})" if col[1] in ['VARCHAR2', 'CHAR'] else col[1]
                 nullable = "YES" if col[3] == 'Y' else "NO"
+                # Clean up default value string
                 default_val = str(col[4]).strip() if col[4] else "None"
                 print(f"{col_name:<25} | {data_type:<15} | {nullable:<6} | {default_val}")
 

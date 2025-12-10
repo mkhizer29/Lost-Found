@@ -82,42 +82,42 @@ def get_locations():
 @bp.get("/api/reports")
 def list_reports():
     """
-    Fetch ALL reports.
-    UPDATED: Returns 'reporter_id' so we can hide the Claim button for the owner.
+    Fetch ALL reports for the Browse Feed.
+    UPDATED: Checks if the CURRENT user has already claimed the item.
     """
+    user_id = session.get("user_id")
+    # If not logged in, pass 0 (so no matches found)
+    safe_uid = user_id if user_id else 0
+
     conn = None
     cur = None
     try:
         conn = get_connection()
         cur = conn.cursor()
 
-        # 1. Fetch Reports
-        # 1. Fetch Reports WITH Claim Info
         cur.execute("""
             SELECT 
               r.report_id,
               i.item_id,      
               r.report_type,
-              i.title          AS item_title,
-              c.name           AS category_name,
-              l.name           AS location_name,
-              i.status         AS item_status,
+              i.title,
+              c.name AS category_name,
+              l.name AS location_name,
+              i.status,
               r.created_at,
-              i.image_url      AS item_image_url,
+              i.image_url,
               r.reporter_id,
-              -- NEW COLUMNS FOR BUTTONS --
-              cl.claim_id,
-              cl.status        AS claim_status,
-              c.IS_HIGH_VALUE
+              c.IS_HIGH_VALUE,
+              -- CHECK IF I HAVE CLAIMED THIS (Returns 1 if yes, 0 if no)
+              (SELECT COUNT(*) FROM CLAIM cl WHERE cl.item_id = i.item_id AND cl.claimant_id = :1) as my_claim_count,
+              -- CHECK IF ANYONE ELSE HAS AN APPROVED CLAIM (To lock it)
+              (SELECT status FROM CLAIM gc WHERE gc.item_id = i.item_id AND gc.status = 'APPROVED' FETCH FIRST 1 ROWS ONLY) as approved_status
             FROM REPORT r
               JOIN ITEM     i ON r.item_id     = i.item_id
               JOIN CATEGORY c ON i.category_id = c.category_id
               JOIN LOCATION l ON r.location_id = l.location_id
-              -- LEFT JOIN to check if there is an active claim --
-              LEFT JOIN CLAIM cl ON i.item_id = cl.item_id 
-                   AND cl.status IN ('PENDING', 'APPROVED', 'REJECTED', 'ESCALATED')
             ORDER BY r.created_at DESC
-        """)
+        """, [safe_uid])
 
         rows = cur.fetchall()
         result = [
@@ -132,10 +132,9 @@ def list_reports():
                 "created_at":     row[7].isoformat() if row[7] is not None else None,
                 "item_image_url": row[8],
                 "reporter_id":    row[9],
-                # MAPPING THE NEW COLUMNS
-                "claim_id":       row[10], 
-                "claim_status":   row[11],
-                "is_high_value":  row[12]
+                "is_high_value":  row[10],
+                "already_claimed": row[11] > 0, # True if I claimed it
+                "approved_status": row[12]
             }
             for row in rows
         ]
@@ -310,8 +309,6 @@ def get_my_reports():
         if conn: conn.close()
 
 # ------------------- Claims Logic (NEW) ------------------- #
-
-# app/routes_basic.py 
 
 @bp.get("/api/my-claims")
 def get_my_claims():
@@ -586,7 +583,8 @@ def reject_claim():
     Allowed for: ADMIN or the REPORTER.
     """
     user_id = session.get("user_id")
-    if not user_id: return jsonify({"error": "Unauthorized"}), 401
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}
     claim_id = data.get("claim_id")
@@ -606,38 +604,55 @@ def reject_claim():
             WHERE c.claim_id = :1
         """, [claim_id])
         row = cur.fetchone()
-        if not row: return jsonify({"error": "Not found"}), 404
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+
         reporter_id, claimant_id = row
 
-        # 2. Permission Check
+        # 2. Permission Check (Admin OR reporter)
         if session.get("role") != 'ADMIN' and user_id != reporter_id:
             return jsonify({"error": "Unauthorized"}), 403
 
         # 3. Update Status
-        cur.execute("UPDATE CLAIM SET status = 'REJECTED' WHERE claim_id = :1", [claim_id])
+        cur.execute(
+            "UPDATE CLAIM SET status = 'REJECTED' WHERE claim_id = :1",
+            [claim_id]
+        )
         
         # 4. Create Notification
         msg = "Your claim was not accepted."
-        cur.execute("INSERT INTO NOTIFICATION (user_id, type, message, is_read, created_at) VALUES (:1, 'CLAIM_STATUS', :2, 'N', SYSTIMESTAMP)", [claimant_id, msg])
+        cur.execute("""
+            INSERT INTO NOTIFICATION (user_id, type, message, is_read, created_at)
+            VALUES (:1, 'CLAIM_STATUS', :2, 'N', SYSTIMESTAMP)
+        """, [claimant_id, msg])
 
         conn.commit()
         return jsonify({"message": "Rejected"})
     except Exception as e:
-        if conn: conn.rollback()
+        if conn:
+            conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
-        if cur: cur.close()
-        if conn: conn.close()
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
-#--------------Returning Item to Claimant (REPORTER) ----------------#
+
+#--------------Returning Item to Claimant (REPORTER / CLAIMANT / ADMIN) ----------------#
 @bp.post("/api/items/returned")
 def mark_returned():
     """
-    Final Resolution: The Reporter confirms the item was handed over.
+    Final Resolution: The item has been handed over.
+    Allowed for:
+      - The original REPORTER (who created the report),
+      - The APPROVED CLAIMANT, or
+      - Any ADMIN.
     Status becomes 'RETURNED'.
     """
     user_id = session.get("user_id")
-    if not user_id: return jsonify({"error": "Unauthorized"}), 401
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}
     item_id = data.get("item_id")
@@ -648,27 +663,49 @@ def mark_returned():
         conn = get_connection()
         cur = conn.cursor()
 
-        # 1. Verify User is the Reporter
-        # Also check if item exists
+        # 1. Verify Item exists and get reporter + approved claimant (if any)
         cur.execute("""
-            SELECT r.reporter_id, c.claimant_id 
+            SELECT 
+                r.reporter_id,
+                c.claimant_id,
+                i.status
             FROM REPORT r
             JOIN ITEM i ON r.item_id = i.item_id
-            LEFT JOIN CLAIM c ON i.item_id = c.item_id AND c.status = 'APPROVED'
+            LEFT JOIN CLAIM c 
+                   ON i.item_id = c.item_id 
+                  AND c.status = 'APPROVED'
             WHERE r.item_id = :1
         """, [item_id])
         row = cur.fetchone()
         
-        if not row: return jsonify({"error": "Item not found in database"}), 404
-        reporter_id, claimant_id = row
+        if not row:
+            return jsonify({"error": "Item not found in database"}), 404
 
-        if user_id != reporter_id and session.get("role") != 'ADMIN':
-            return jsonify({"error": "Only the Finder can mark this as returned."}), 403
+        reporter_id, claimant_id, item_status = row
 
-        # 2. Update Item Status
+        user_role = session.get("role")
+
+        # 2. Permission logic:
+        #    - ADMIN: always allowed
+        #    - Otherwise: reporter OR approved claimant
+        if user_role != 'ADMIN':
+            allowed_users = {reporter_id}
+            if claimant_id:
+                allowed_users.add(claimant_id)
+
+            if user_id not in allowed_users:
+                return jsonify({
+                    "error": "Only the reporter, approved claimant, or an admin can mark this as returned."
+                }), 403
+
+        # Optional: you can enforce that only CLAIMED items can move to RETURNED
+        # if item_status != 'CLAIMED':
+        #     return jsonify({"error": f"Item must be CLAIMED before it can be marked RETURNED (current: {item_status})."}), 400
+
+        # 3. Update Item Status
         cur.execute("UPDATE ITEM SET status = 'RETURNED' WHERE item_id = :1", [item_id])
 
-        # 3. Notify the Claimant
+        # 4. Notify the Claimant, if present
         if claimant_id:
             msg = "The item has been marked as RETURNED. Thank you!"
             cur.execute("""
@@ -680,11 +717,15 @@ def mark_returned():
         return jsonify({"message": "Item marked as returned."})
 
     except Exception as e:
-        if conn: conn.rollback()
+        if conn:
+            conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
-        if cur: cur.close()
-        if conn: conn.close()
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
 
 # ------------------- Escalate to Admin ------------------- #
 @bp.post("/api/claims/escalate")
